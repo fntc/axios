@@ -1,5 +1,3 @@
-/* axios v0.25.0 | (c) 2022 by Matt Zabriskie */
-/* axios v0.24.0 | (c) 2022 by Matt Zabriskie */
 (function webpackUniversalModuleDefinition(root, factory) {
 	if(typeof exports === 'object' && typeof module === 'object')
 		module.exports = factory();
@@ -165,22 +163,40 @@ module.exports = function xhrAdapter(config) {
     // Set the request timeout in MS
     request.timeout = config.timeout;
 
-    function onloadend() {
+    var response = null;
+
+    function onheadersreceived() {
       if (!request) {
         return;
       }
-      // Prepare the response
       var responseHeaders = 'getAllResponseHeaders' in request ? parseHeaders(request.getAllResponseHeaders()) : null;
-      var responseData = !responseType || responseType === 'text' ||  responseType === 'json' ?
-        request.responseText : request.response;
-      var response = {
-        data: responseData,
+      response = {
+        data: null,
         status: request.status,
         statusText: request.statusText,
         headers: responseHeaders,
         config: config,
         request: request
       };
+    }
+
+    function onloadend() {
+      if (!request) {
+        return;
+      }
+      // Prepare the response
+      // var responseHeaders = 'getAllResponseHeaders' in request ? parseHeaders(request.getAllResponseHeaders()) : null;
+      var responseData = !responseType || responseType === 'text' ||  responseType === 'json' ?
+        request.responseText : request.response;
+      response.data = responseData;
+      /* var response = {
+        data: responseData,
+        status: request.status,
+        statusText: request.statusText,
+        headers: responseHeaders,
+        config: config,
+        request: request
+      }; */
 
       settle(function _resolve(value) {
         resolve(value);
@@ -195,12 +211,24 @@ module.exports = function xhrAdapter(config) {
     }
 
     if ('onloadend' in request) {
+      request.onreadystatechange = function handleLoadstart() {
+        if (!request || request.readyState !== 2) {
+          return;
+        }
+        onheadersreceived();
+      };
       // Use onloadend if available
       request.onloadend = onloadend;
     } else {
       // Listen for ready state to emulate onloadend
       request.onreadystatechange = function handleLoad() {
-        if (!request || request.readyState !== 4) {
+        if (!request) {
+          return;
+        }
+        if (request.readyState === 2) {
+          onheadersreceived();
+        }
+        if (request.readyState !== 4) {
           return;
         }
 
@@ -233,7 +261,7 @@ module.exports = function xhrAdapter(config) {
     request.onerror = function handleError() {
       // Real errors are hidden from us by the browser
       // onerror should only fire if it's a network error
-      reject(createError('Network Error', config, null, request));
+      reject(createError('Network Error', config, null, request, response));
 
       // Clean up request
       request = null;
@@ -617,14 +645,14 @@ function Axios(instanceConfig) {
  *
  * @param {Object} config The config specific for this request (merged with this.defaults)
  */
-Axios.prototype.request = function request(config) {
+Axios.prototype.request = function request(configOrUrl, config) {
   /*eslint no-param-reassign:0*/
   // Allow for axios('example/url'[, config]) a la fetch API
-  if (typeof config === 'string') {
-    config = arguments[1] || {};
-    config.url = arguments[0];
-  } else {
+  if (typeof configOrUrl === 'string') {
     config = config || {};
+    config.url = configOrUrl;
+  } else {
+    config = configOrUrl || {};
   }
 
   config = mergeConfig(this.defaults, config);
@@ -1218,6 +1246,7 @@ module.exports = function transformData(data, headers, fns) {
 var utils = __webpack_require__(/*! ./utils */ "./lib/utils.js");
 var normalizeHeaderName = __webpack_require__(/*! ./helpers/normalizeHeaderName */ "./lib/helpers/normalizeHeaderName.js");
 var enhanceError = __webpack_require__(/*! ./core/enhanceError */ "./lib/core/enhanceError.js");
+var toFormData = __webpack_require__(/*! ./helpers/toFormData */ "./lib/helpers/toFormData.js");
 
 var DEFAULT_CONTENT_TYPE = {
   'Content-Type': 'application/x-www-form-urlencoded'
@@ -1286,10 +1315,17 @@ var defaults = {
       setContentTypeIfUnset(headers, 'application/x-www-form-urlencoded;charset=utf-8');
       return data.toString();
     }
-    if (utils.isObject(data) || (headers && headers['Content-Type'] === 'application/json')) {
+
+    var isObjectPayload = utils.isObject(data);
+    var contentType = headers && headers['Content-Type'];
+
+    if ( isObjectPayload && contentType === 'multipart/form-data' ) {
+      return toFormData(data,  new (this.env && this.env.FormData || FormData));
+    } else if ( isObjectPayload || contentType === 'application/json' ) {
       setContentTypeIfUnset(headers, 'application/json');
       return stringifySafely(data);
     }
+
     return data;
   }],
 
@@ -1327,6 +1363,8 @@ var defaults = {
   maxContentLength: -1,
   maxBodyLength: -1,
 
+  env: {},
+
   validateStatus: function validateStatus(status) {
     return status >= 200 && status < 300;
   },
@@ -1359,7 +1397,7 @@ module.exports = defaults;
 /***/ (function(module, exports) {
 
 module.exports = {
-  "version": "0.24.0"
+  "version": "0.25.0.1"
 };
 
 /***/ }),
@@ -1580,7 +1618,7 @@ module.exports = function isAbsoluteURL(url) {
   // A URL is considered absolute if it begins with "<scheme>://" or "//" (protocol-relative URL).
   // RFC 3986 defines scheme name as a sequence of characters beginning with a letter and followed
   // by any combination of letters, digits, plus, period, or hyphen.
-  return /^([a-z][a-z\d\+\-\.]*:)?\/\//i.test(url);
+  return /^([a-z][a-z\d+\-.]*:)?\/\//i.test(url);
 };
 
 
@@ -1596,6 +1634,8 @@ module.exports = function isAbsoluteURL(url) {
 "use strict";
 
 
+var utils = __webpack_require__(/*! ./../utils */ "./lib/utils.js");
+
 /**
  * Determines whether the payload is an error thrown by Axios
  *
@@ -1603,7 +1643,7 @@ module.exports = function isAbsoluteURL(url) {
  * @returns {boolean} True if the payload is an error thrown by Axios, otherwise false
  */
 module.exports = function isAxiosError(payload) {
-  return (typeof payload === 'object') && (payload.isAxiosError === true);
+  return utils.isObject(payload) && (payload.isAxiosError === true);
 };
 
 
@@ -1817,6 +1857,77 @@ module.exports = function spread(callback) {
 
 /***/ }),
 
+/***/ "./lib/helpers/toFormData.js":
+/*!***********************************!*\
+  !*** ./lib/helpers/toFormData.js ***!
+  \***********************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+var utils = __webpack_require__(/*! ../utils */ "./lib/utils.js");
+
+function combinedKey(parentKey, elKey) {
+  return parentKey + '.' + elKey;
+}
+
+function buildFormData(formData, data, parentKey) {
+  if (Array.isArray(data)) {
+    data.forEach(function buildArray(el, i) {
+      buildFormData(formData, el, combinedKey(parentKey, i));
+    });
+  } else if (
+    typeof data === 'object' &&
+    !(utils.isFile(data) || data === null)
+  ) {
+    Object.keys(data).forEach(function buildObject(key) {
+      buildFormData(
+        formData,
+        data[key],
+        parentKey ? combinedKey(parentKey, key) : key
+      );
+    });
+  } else {
+    if (data === undefined) {
+      return;
+    }
+
+    var value =
+      typeof data === 'boolean' || typeof data === 'number'
+        ? data.toString()
+        : data;
+    formData.append(parentKey, value);
+  }
+}
+
+/**
+ * convert a data object to FormData
+ *
+ * type FormDataPrimitive = string | Blob | number | boolean
+ * interface FormDataNest {
+ *   [x: string]: FormVal
+ * }
+ *
+ * type FormVal = FormDataNest | FormDataPrimitive
+ *
+ * @param {FormVal} data
+ * @param {?Object} formData
+ */
+
+module.exports = function getFormData(data, formData) {
+  // eslint-disable-next-line no-param-reassign
+  formData = formData || new FormData();
+
+  buildFormData(formData, data);
+
+  return formData;
+};
+
+
+/***/ }),
+
 /***/ "./lib/helpers/validator.js":
 /*!**********************************!*\
   !*** ./lib/helpers/validator.js ***!
@@ -1934,7 +2045,7 @@ var toString = Object.prototype.toString;
  * @returns {boolean} True if value is an Array, otherwise false
  */
 function isArray(val) {
-  return toString.call(val) === '[object Array]';
+  return Array.isArray(val);
 }
 
 /**
@@ -1968,15 +2079,6 @@ function isArrayBuffer(val) {
   return toString.call(val) === '[object ArrayBuffer]';
 }
 
-/**
- * Determine if a value is a FormData
- *
- * @param {Object} val The value to test
- * @returns {boolean} True if value is an FormData, otherwise false
- */
-function isFormData(val) {
-  return (typeof FormData !== 'undefined') && (val instanceof FormData);
-}
 
 /**
  * Determine if a value is a view on an ArrayBuffer
@@ -1989,7 +2091,7 @@ function isArrayBufferView(val) {
   if ((typeof ArrayBuffer !== 'undefined') && (ArrayBuffer.isView)) {
     result = ArrayBuffer.isView(val);
   } else {
-    result = (val) && (val.buffer) && (val.buffer instanceof ArrayBuffer);
+    result = (val) && (val.buffer) && (isArrayBuffer(val.buffer));
   }
   return result;
 }
@@ -2090,13 +2192,28 @@ function isStream(val) {
 }
 
 /**
+ * Determine if a value is a FormData
+ *
+ * @param {Object} thing The value to test
+ * @returns {boolean} True if value is an FormData, otherwise false
+ */
+function isFormData(thing) {
+  var pattern = '[object FormData]';
+  return thing && (
+    (typeof FormData === 'function' && thing instanceof FormData) ||
+    toString.call(thing) === pattern ||
+    (isFunction(thing.toString) && thing.toString() === pattern)
+  );
+}
+
+/**
  * Determine if a value is a URLSearchParams object
  *
  * @param {Object} val The value to test
  * @returns {boolean} True if value is a URLSearchParams object, otherwise false
  */
 function isURLSearchParams(val) {
-  return typeof URLSearchParams !== 'undefined' && val instanceof URLSearchParams;
+  return toString.call(val) === '[object URLSearchParams]';
 }
 
 /**

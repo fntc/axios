@@ -1,5 +1,10 @@
 # Changelog
 
+### 0.25.0.1 (February 9, 2022)
+
+Fixes and Functionality:
+- Streamed requests with connection closed by the server get response headers published via error object
+
 ### 0.25.0 (January 18, 2022)
 
 Breaking changes:
